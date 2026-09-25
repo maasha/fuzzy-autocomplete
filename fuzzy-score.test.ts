@@ -1,11 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import {
-  fuzzyScore,
-  scoreItemFuzzy,
-  compareItemsByFuzzyScore,
-  tokenizeQuery,
-} from "./fuzzy-score.ts";
+import { fuzzyScore } from "./fuzzy-score.ts";
+import { tokenizeQuery } from "./tokenizer.ts";
+import { scoreItemFuzzy, compareItemsByFuzzyScore } from "./item-scorer.ts";
 
 describe("fuzzyScore", () => {
   it("matches exact string", () => {
@@ -18,16 +15,12 @@ describe("fuzzyScore", () => {
   it("matches non-contiguous subsequence", () => {
     const r = fuzzyScore("reme", "reme", 0, "read_me.txt", "read_me.txt", 0, true);
     assert.ok(r);
-    // The spec shows [0,1,9,10] but that appears to be a typo; the actual
-    // matched positions in "read_me.txt" are [0,1,5,6] (r,e,a,d,_,m,e)
     assert.deepStrictEqual(r.matches, [0, 1, 5, 6]);
   });
 
   it("matches camelcase", () => {
     const r = fuzzyScore("upc", "upc", 0, "userProfileController.ts", "userprofilecontroller.ts", 0, true);
     assert.ok(r);
-    // userProfileController.ts: u(0) s(1) e(2) r(3) P(4) r(5) o(6) f(7) i(8) l(9) e(10) C(11) o(12)...
-    // The spec shows [0,4,12] but C is at 11, not 12.
     assert.deepStrictEqual(r.matches, [0, 4, 11]);
   });
 
@@ -87,6 +80,13 @@ describe("fuzzyScore", () => {
     const r = fuzzyScore("abcdefgh", "abcdefgh", 0, "abc", "abc", 0, true);
     assert.strictEqual(r, undefined);
   });
+
+  it("rejects weak first match when firstMatchCanBeWeak is false", () => {
+    const strong = fuzzyScore("abc", "abc", 0, "abc", "abc", 0, false);
+    const weak = fuzzyScore("bc", "bc", 0, "abc", "abc", 0, false);
+    assert.ok(strong);
+    assert.strictEqual(weak, undefined);
+  });
 });
 
 describe("tokenizeQuery", () => {
@@ -133,15 +133,12 @@ describe("scoreItemFuzzy", () => {
     assert.strictEqual(r2, undefined);
   });
 
-  it("handles exact quoted tokens", () => {
+  it("handles exact quoted tokens (case-sensitive)", () => {
     const r1 = scoreItemFuzzy("admin/controller.ts", (s) => s, '"controller.ts"');
     const r2 = scoreItemFuzzy("userProfileController.ts", (s) => s, '"controller.ts"');
     assert.ok(r1);
-    // userProfileController.ts contains "Controller.ts" which is
-    // case-insensitively equal to "controller.ts", so per the stated
-    // algorithm (candidateLower.includes) it matches.
-    assert.ok(r2);
-    assert.strictEqual(r2?.score, 10); // exactMatchBonus only
+    // Case-sensitive exact match: "controller.ts" ≠ "Controller.ts"
+    assert.strictEqual(r2, undefined);
   });
 
   it("handles mixed fuzzy and exact tokens", () => {
@@ -151,10 +148,15 @@ describe("scoreItemFuzzy", () => {
     assert.ok(r1);
     // admin/controller.ts lacks the "src" fuzzy token
     assert.strictEqual(r2, undefined);
-    // src/userProfileController.ts DOES contain "controller.ts" as a
-    // substring (case-insensitively), so per the algorithm it matches
-    // both tokens. The spec example appears to have an incorrect expectation.
-    assert.ok(r3);
+    // Case-sensitive exact match: "Controller.ts" ≠ "controller.ts"
+    assert.strictEqual(r3, undefined);
+  });
+
+  it("handles path-aware query tokens", () => {
+    const r1 = scoreItemFuzzy("src/components/foo.ts", (s) => s, "src/foo");
+    const r2 = scoreItemFuzzy("alpha/beta.ts", (s) => s, "a/b");
+    assert.ok(r1);
+    assert.ok(r2);
   });
 });
 

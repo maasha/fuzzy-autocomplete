@@ -2,14 +2,21 @@
   "name": "fuzzy-autocomplete",
   "version": "1.0.0",
   "description": "Pi extension replacing @ file-autocomplete with VS Code–style fuzzy scoring",
-  "keywords": ["pi-package", "pi-extension", "fuzzy", "autocomplete"],
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "fuzzy",
+    "autocomplete"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/<your-username>/fuzzy-autocomplete.git"
   },
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -18,7 +25,12 @@
   "files": [
     "index.ts",
     "fuzzy-score.ts",
+    "tokenizer.ts",
+    "item-scorer.ts",
     "*.test.ts",
     "README.md"
-  ]
+  ],
+  "devDependencies": {
+    "tsx": "^4.23.15"
+  }
 }

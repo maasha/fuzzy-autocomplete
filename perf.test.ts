@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { scoreItemFuzzy, compareItemsByFuzzyScore } from "./fuzzy-score.ts";
+import { scoreItemFuzzy, compareItemsByFuzzyScore } from "./item-scorer.ts";
 
 function generateFiles(count: number): string[] {
   const files: string[] = [];

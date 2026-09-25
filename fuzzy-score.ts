@@ -3,17 +3,17 @@
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const scoreBase = 1;
-const scoreBonusBoundary = 4;
-const scoreBonusCamelCase = 4;
-const scoreBonusConsecutive = 5;
-const scoreBonusFirstMatch = 4;
-const scoreBonusPrefix = 9;
-const scoreBonusExact = 10;
-const penaltyGap = 1;
-const penaltyMax = 5;
+export const scoreBase = 1;
+export const scoreBonusBoundary = 4;
+export const scoreBonusCamelCase = 4;
+export const scoreBonusConsecutive = 5;
+export const scoreBonusFirstMatch = 4;
+export const scoreBonusPrefix = 9;
+export const scoreBonusExact = 10;
+export const penaltyGap = 1;
+export const penaltyMax = 5;
 
-const NO_SCORE = Number.MIN_SAFE_INTEGER / 4;
+export const NO_SCORE = Number.MIN_SAFE_INTEGER / 4;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -22,23 +22,9 @@ export interface FuzzyScore {
   matches: number[]; // absolute indices in candidate
 }
 
-export interface ScoredItem<T> {
-  item: T;
-  score: number;
-  matches: number[];
-}
-
-export type TokenMode = "fuzzy" | "exact";
-
-export interface QueryToken {
-  text: string;
-  textLower: string;
-  mode: TokenMode;
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function isSeparator(c: string): boolean {
+export function isSeparator(c: string): boolean {
   return c === "_" || c === "-" || c === "." || c === "/" || c === "\\" || c === " " || c === "\t";
 }
 
@@ -50,13 +36,20 @@ function isLetter(c: string): boolean {
   return /[a-zA-Z]/.test(c);
 }
 
-function isLowerToUpper(
-  prev: string,
-  prevLower: string,
-  curr: string,
-  currLower: string
-): boolean {
-  return prevLower === prev && currLower !== curr;
+function isLower(c: string): boolean {
+  return c === c.toLowerCase() && isLetter(c);
+}
+
+function isUpper(c: string): boolean {
+  return c === c.toUpperCase() && isLetter(c);
+}
+
+/**
+ * True when prev is a lowercase letter and curr is an uppercase letter,
+ * indicating a CamelCase boundary.
+ */
+function isLowerToUpper(prev: string, curr: string): boolean {
+  return isLower(prev) && isUpper(curr);
 }
 
 function computeMatchBonus(
@@ -69,14 +62,12 @@ function computeMatchBonus(
   }
   const prev = candidate[pos - 1];
   const curr = candidate[pos];
-  const prevLower = candidateLower[pos - 1];
-  const currLower = candidateLower[pos];
 
   if (isSeparator(prev)) {
     return scoreBonusBoundary;
   }
 
-  if (isLowerToUpper(prev, prevLower, curr, currLower)) {
+  if (isLowerToUpper(prev, curr)) {
     return scoreBonusCamelCase;
   }
 
@@ -118,12 +109,10 @@ export function fuzzyScore(
     bonuses[i] = computeMatchBonus(candidate, candidateLower, candidatePos + i);
   }
 
-  // scores[i][j] = best score for matching query[0..i] ending at candidate[j]
   const scores: number[][] = Array.from({ length: queryLen }, () =>
     new Array(candidateLen).fill(NO_SCORE)
   );
 
-  // back[i][j] = previous candidate position used for best score
   const back: number[][] = Array.from({ length: queryLen }, () =>
     new Array(candidateLen).fill(-1)
   );
@@ -133,6 +122,11 @@ export function fuzzyScore(
   let foundAny = false;
   for (let j = 0; j < candidateLen; j++) {
     if (candidateLower[candidatePos + j] === q0) {
+      // When firstMatchCanBeWeak is false, the first match must be at a
+      // strong position (word/path boundary) to be considered valid.
+      if (!firstMatchCanBeWeak && bonuses[j] === 0) {
+        continue;
+      }
       let score = scoreBase + bonuses[j];
       if (
         j === 0 &&
@@ -152,13 +146,10 @@ export function fuzzyScore(
     const qi = queryLower[queryPos + i];
     let rowFound = false;
 
-    // Running maximum of previous row up to position j-2.
-    // Position j-1 is handled separately for the consecutive bonus.
     let bestPrev = NO_SCORE;
     let bestPrevIdx = -1;
 
     for (let j = 0; j < candidateLen; j++) {
-      // Update running max with previous row at position j-2
       if (j > 1 && scores[i - 1][j - 2] > bestPrev) {
         bestPrev = scores[i - 1][j - 2];
         bestPrevIdx = j - 2;
@@ -218,8 +209,7 @@ export function fuzzyScore(
 
   if (bestJ < 0) return undefined;
 
-  // ── Prefix / Exact bonuses ──
-  // Full prefix match: query matches start of candidate exactly
+  // Prefix / Exact bonuses
   if (
     queryLen <= candidateLen &&
     candidateLower.substring(candidatePos, candidatePos + queryLen) ===
@@ -228,7 +218,6 @@ export function fuzzyScore(
     bestScore += scoreBonusPrefix;
   }
 
-  // Exact match: query equals candidate (full string, case-insensitive)
   if (
     queryLen === candidateLen &&
     candidateLower.substring(candidatePos, candidatePos + queryLen) ===
@@ -245,8 +234,7 @@ export function fuzzyScore(
     j = back[i][j];
   }
 
-  // Case-sensitive alignment bonus: for each matched position where the
-  // original case matches, add a tiny bonus.
+  // Case-sensitive alignment bonus
   let caseBonus = 0;
   for (let i = 0; i < queryLen; i++) {
     if (query[queryPos + i] === candidate[matches[i]]) {
@@ -258,139 +246,59 @@ export function fuzzyScore(
   return { score: bestScore, matches };
 }
 
-// ─── Tokenization ────────────────────────────────────────────────────────────
+// ─── Path-Aware Scoring ──────────────────────────────────────────────────────
 
-export function tokenizeQuery(query: string): QueryToken[] {
-  const tokens: QueryToken[] = [];
-  let i = 0;
+export function scorePathAware(
+  query: string,
+  queryLower: string,
+  candidate: string,
+  candidateLower: string
+): FuzzyScore | undefined {
+  const segments = query.split(/[\/\\]+/).filter((s) => s.length > 0);
+  const segmentsLower = queryLower.split(/[\/\\]+/).filter((s) => s.length > 0);
 
-  while (i < query.length) {
-    // Skip whitespace
-    while (i < query.length && /\s/.test(query[i])) i++;
-    if (i >= query.length) break;
-
-    if (query[i] === '"') {
-      // Quoted exact token
-      let j = i + 1;
-      while (j < query.length && query[j] !== '"') j++;
-      const text = query.slice(i + 1, j);
-      if (text.length > 0) {
-        tokens.push({ text, textLower: text.toLowerCase(), mode: "exact" });
-      }
-      i = j + 1;
-    } else {
-      // Fuzzy token
-      let j = i;
-      while (j < query.length && !/\s/.test(query[j])) j++;
-      const text = query.slice(i, j);
-      if (text.length > 0) {
-        tokens.push({ text, textLower: text.toLowerCase(), mode: "fuzzy" });
-      }
-      i = j;
-    }
+  if (segments.length === 0) {
+    return { score: 0, matches: [] };
   }
 
-  return tokens;
-}
-
-// ─── Item Scoring ──────────────────────────────────────────────────────────────
-
-function containsAllChars(candidate: string, query: string): boolean {
-  let i = 0;
-  for (const c of candidate) {
-    if (c === query[i]) {
-      i++;
-      if (i === query.length) return true;
-    }
-  }
-  return false;
-}
-
-export function scoreItemFuzzy<T>(
-  item: T,
-  getText: (item: T) => string,
-  query: string
-): ScoredItem<T> | undefined {
-  const text = getText(item);
-  const textLower = text.toLowerCase();
-  const tokens = tokenizeQuery(query);
-
-  if (tokens.length === 0) {
-    return { item, score: 0, matches: [] };
+  if (segments.length === 1) {
+    return fuzzyScore(query, queryLower, 0, candidate, candidateLower, 0, true);
   }
 
   let totalScore = 0;
   const allMatches: number[] = [];
+  let candidatePos = 0;
 
-  for (const token of tokens) {
-    if (token.mode === "exact") {
-      if (!textLower.includes(token.textLower)) {
-        return undefined;
-      }
-      totalScore += scoreBonusExact;
-      // Add match positions for exact substring (first occurrence)
-      const idx = textLower.indexOf(token.textLower);
-      for (let k = 0; k < token.text.length; k++) {
-        allMatches.push(idx + k);
-      }
-    } else {
-      // Fast path: reject candidates that don't contain all query chars in order.
-      if (!containsAllChars(textLower, token.textLower)) {
-        return undefined;
-      }
-      const result = fuzzyScore(
-        token.text,
-        token.textLower,
-        0,
-        text,
-        textLower,
-        0,
-        true
-      );
-      if (!result) {
-        return undefined;
-      }
-      totalScore += result.score;
-      for (const pos of result.matches) {
-        if (!allMatches.includes(pos)) {
-          allMatches.push(pos);
-        }
-      }
+  for (let s = 0; s < segments.length; s++) {
+    const seg = segments[s];
+    const segLower = segmentsLower[s];
+    const result = fuzzyScore(seg, segLower, 0, candidate, candidateLower, candidatePos, true);
+    if (!result) {
+      return undefined;
     }
+
+    totalScore += result.score;
+
+    const firstMatch = result.matches[0];
+    const lastMatch = result.matches[result.matches.length - 1];
+
+    // Bonus when segment starts at a path/word boundary
+    if (firstMatch === 0 || isSeparator(candidate[firstMatch - 1])) {
+      totalScore += scoreBonusBoundary;
+    }
+
+    // Bonus when segment matches a whole path segment exactly
+    const afterLast = lastMatch + 1;
+    if (
+      (afterLast >= candidate.length || isSeparator(candidate[afterLast])) &&
+      (firstMatch === 0 || isSeparator(candidate[firstMatch - 1]))
+    ) {
+      totalScore += scoreBonusExact;
+    }
+
+    allMatches.push(...result.matches);
+    candidatePos = lastMatch + 1;
   }
 
-  allMatches.sort((a, b) => a - b);
-
-  return { item, score: totalScore, matches: allMatches };
-}
-
-// ─── Comparator ────────────────────────────────────────────────────────────────
-
-export function compareItemsByFuzzyScore<T>(
-  a: ScoredItem<T>,
-  b: ScoredItem<T>,
-  getText: (item: T) => string
-): number {
-  // 1. Higher score first
-  if (b.score !== a.score) {
-    return b.score - a.score;
-  }
-
-  const textA = getText(a.item);
-  const textB = getText(b.item);
-
-  // 2. Shallower path depth first
-  const depthA = (textA.match(/[\/\\]/g) || []).length;
-  const depthB = (textB.match(/[\/\\]/g) || []).length;
-  if (depthA !== depthB) {
-    return depthA - depthB;
-  }
-
-  // 3. Shorter overall string first
-  if (textA.length !== textB.length) {
-    return textA.length - textB.length;
-  }
-
-  // 4. Lexicographic tie-breaker
-  return textA.localeCompare(textB);
+  return { score: totalScore, matches: allMatches };
 }

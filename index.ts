@@ -8,7 +8,7 @@ import {
   scoreItemFuzzy,
   compareItemsByFuzzyScore,
   type ScoredItem,
-} from "./fuzzy-score.ts";
+} from "./item-scorer.ts";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -24,85 +24,105 @@ interface FileCache {
   timestamp: number;
 }
 
-// ─── File Discovery ──────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
-let fileCache: FileCache | undefined;
-
-async function tryExec(
-  pi: ExtensionAPI,
-  command: string,
-  args: string[],
-  cwd: string
-): Promise<string[] | undefined> {
-  try {
-    const result = await pi.exec(command, args, { cwd, timeout: 5_000 });
-    if (result.code === 0) {
-      return result.stdout.split("\n").filter((f) => f.length > 0);
+function formatLabel(text: string, matches: number[]): string {
+  const set = new Set(matches);
+  const bold = "\x1b[1m";
+  const reset = "\x1b[0m";
+  let result = "";
+  let inBold = false;
+  for (let i = 0; i < text.length; i++) {
+    const isMatch = set.has(i);
+    if (isMatch && !inBold) {
+      result += bold;
+      inBold = true;
+    } else if (!isMatch && inBold) {
+      result += reset;
+      inBold = false;
     }
-  } catch {
-    // Command not found or execution failed — treat as no results.
+    result += text[i];
   }
-  return undefined;
-}
-
-async function getProjectFiles(pi: ExtensionAPI, cwd: string): Promise<string[]> {
-  if (
-    fileCache &&
-    fileCache.cwd === cwd &&
-    Date.now() - fileCache.timestamp < FILE_CACHE_TTL_MS
-  ) {
-    return fileCache.files;
-  }
-
-  let files: string[] | undefined;
-
-  // Try `fd` (modern replacement for find)
-  files = await tryExec(pi, "fd", ["--type", "f", "--strip-cwd-prefix"], cwd);
-
-  if (!files) {
-    // Some distros install fd as fdfind
-    files = await tryExec(pi, "fdfind", ["--type", "f", "--strip-cwd-prefix"], cwd);
-  }
-
-  if (!files) {
-    // Fallback to standard `find`
-    const findResult = await tryExec(pi, "find", [".", "-type", "f"], cwd);
-    if (findResult) {
-      files = findResult.map((f) => f.replace(/^\.\//, ""));
-    }
-  }
-
-  if (!files) {
-    files = [];
-  }
-
-  if (files.length > MAX_FILE_LIST_SIZE) {
-    files = files.slice(0, MAX_FILE_LIST_SIZE);
-  }
-
-  fileCache = { files, cwd, timestamp: Date.now() };
-  return files;
+  if (inBold) result += reset;
+  return result;
 }
 
 // ─── Provider Factory ──────────────────────────────────────────────────────────
 
-function extractAtPrefix(textBeforeCursor: string): string | undefined {
+export function extractAtPrefix(textBeforeCursor: string): string | undefined {
   const match = textBeforeCursor.match(/(?:^|[ \t])@(.*)$/);
   return match?.[1]?.trim();
 }
 
-function createFuzzyAutocompleteProvider(
+export function createFuzzyAutocompleteProvider(
   current: AutocompleteProvider,
   pi: ExtensionAPI,
   cwd: string
-): AutocompleteProvider {
+): AutocompleteProvider
+{
+  let fileCache: FileCache | undefined;
+
+  async function tryExec(
+    command: string,
+    args: string[]
+  ): Promise<string[] | undefined>
+  {
+    try {
+      const result = await pi.exec(command, args, { cwd, timeout: 5_000 });
+      if (result.code === 0) {
+        return result.stdout.split("\n").filter((f) => f.length > 0);
+      }
+    } catch {
+      // Command not found or execution failed — treat as no results.
+    }
+    return undefined;
+  }
+
+  async function getProjectFiles(): Promise<string[]>
+  {
+    if (
+      fileCache &&
+      fileCache.cwd === cwd &&
+      Date.now() - fileCache.timestamp < FILE_CACHE_TTL_MS
+    ) {
+      return fileCache.files;
+    }
+
+    let files: string[] | undefined;
+
+    files = await tryExec("fd", ["--type", "f", "--strip-cwd-prefix"]);
+
+    if (!files) {
+      files = await tryExec("fdfind", ["--type", "f", "--strip-cwd-prefix"]);
+    }
+
+    if (!files) {
+      const findResult = await tryExec("find", [".", "-type", "f"]);
+      if (findResult) {
+        files = findResult.map((f) => f.replace(/^\.\//, ""));
+      }
+    }
+
+    if (!files) {
+      files = [];
+    }
+
+    if (files.length > MAX_FILE_LIST_SIZE) {
+      files = files.slice(0, MAX_FILE_LIST_SIZE);
+    }
+
+    fileCache = { files, cwd, timestamp: Date.now() };
+    return files;
+  }
+
   return {
     async getSuggestions(
       lines,
       cursorLine,
       cursorCol,
       options
-    ): Promise<AutocompleteSuggestions | null> {
+    ): Promise<AutocompleteSuggestions | null>
+    {
       const currentLine = lines[cursorLine] ?? "";
       const textBeforeCursor = currentLine.slice(0, cursorCol);
       const token = extractAtPrefix(textBeforeCursor);
@@ -112,18 +132,37 @@ function createFuzzyAutocompleteProvider(
         return current.getSuggestions(lines, cursorLine, cursorCol, options);
       }
 
-      const files = await getProjectFiles(pi, cwd);
+      const files = await getProjectFiles();
 
       // Fallback to built-in provider if we couldn't discover files.
       if (options.signal.aborted || files.length === 0) {
         return current.getSuggestions(lines, cursorLine, cursorCol, options);
       }
 
+      // Empty query: return alphabetically sorted files, unfiltered.
+      if (token === "") {
+        const items: AutocompleteItem[] = files
+          .sort((a, b) => a.localeCompare(b))
+          .slice(0, MAX_SUGGESTIONS)
+          .map((f) => ({ value: f, label: f }));
+        return {
+          items,
+          prefix: "@",
+        };
+      }
+
       const scored: ScoredItem<string>[] = [];
+      const CULL_THRESHOLD = MAX_SUGGESTIONS * 10;
+      const KEEP_AFTER_CULL = MAX_SUGGESTIONS * 2;
+
       for (const file of files) {
         const result = scoreItemFuzzy(file, (f) => f, token);
         if (result) {
           scored.push(result);
+          if (scored.length > CULL_THRESHOLD) {
+            scored.sort((a, b) => compareItemsByFuzzyScore(a, b, (f) => f));
+            scored.length = KEEP_AFTER_CULL;
+          }
         }
       }
 
@@ -138,7 +177,7 @@ function createFuzzyAutocompleteProvider(
         .slice(0, MAX_SUGGESTIONS)
         .map((s) => ({
           value: s.item,
-          label: s.item,
+          label: s.matches.length > 0 ? formatLabel(s.item, s.matches) : s.item,
         }));
 
       return {
@@ -163,6 +202,13 @@ function createFuzzyAutocompleteProvider(
 // ─── Extension Entry Point ───────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI): void {
+  pi.registerCommand("fuzzy-status", {
+    description: "Check if fuzzy autocomplete extension is loaded",
+    handler: async (_name, ctx) => {
+      ctx.ui.notify("Fuzzy autocomplete extension is loaded!", "info");
+    },
+  });
+
   pi.on("session_start", async (_event, ctx) => {
     ctx.ui.addAutocompleteProvider((current) =>
       createFuzzyAutocompleteProvider(current, pi, ctx.cwd)
