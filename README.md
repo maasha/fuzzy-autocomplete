@@ -4,19 +4,42 @@ A [Pi](https://github.com/earendil-works/pi) extension that replaces the built-i
 
 ## Install
 
+### From git (recommended)
+
+Install permanently from this repository:
+
 ```bash
+pi install git:github.com/maasha/fuzzy-autocomplete
+```
+
+Or try it once without installing:
+
+```bash
+pi -e git:github.com/maasha/fuzzy-autocomplete
+```
+
+### From a local path
+
+Clone the repo and load the extension directly:
+
+```bash
+git clone https://github.com/maasha/fuzzy-autocomplete.git
 pi --extension ./fuzzy-autocomplete
 ```
 
-Or add it to your project's Pi dependencies:
+Or add it to your project's Pi settings:
 
 ```json
 {
-  "pi": {
-    "extensions": ["./fuzzy-autocomplete"]
-  }
+  "packages": [
+    {
+      "source": "./fuzzy-autocomplete"
+    }
+  ]
 }
 ```
+
+No build step is required — Pi compiles TypeScript on the fly with `jiti`.
 
 ## What it does
 
