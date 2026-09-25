@@ -2,6 +2,8 @@
 
 A [Pi](https://github.com/earendil-works/pi) extension that replaces the built-in `@` file-autocomplete with a VS Code Quick Open–style fuzzy scorer.
 
+> 💻 **Vibe coded** with the [`moonshotai/kimi-k2.6`](https://huggingface.co/moonshotai/kimi-k2.6) model. Every line of TypeScript was written, tested, and refined through collaborative prompting — no manual coding required.
+
 ## Install
 
 ### From git (recommended)
